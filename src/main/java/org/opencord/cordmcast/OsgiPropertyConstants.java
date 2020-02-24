@@ -29,4 +29,7 @@ public final class OsgiPropertyConstants {
 
     public static final String PRIORITY = "priority";
     public static final int DEFAULT_PRIORITY = 500;
+
+    public static final String STATISTICS_GENERATION_PERIOD = "statisticsGenerationPeriodInSeconds";
+    public static final int STATISTICS_GENERATION_PERIOD_DEFAULT = 30;
 }

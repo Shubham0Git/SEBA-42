@@ -70,6 +70,7 @@ public class McastTest extends McastTestBase {
       cordMcast.deviceService = new DeviceServiceAdapter();
       cordMcast.networkConfig = new NetworkConfigRegistryAdapter();
       cordMcast.cordConfigService = new MockCordConfigService();
+      cordMcast.cordMcastStatisticsService = new CordMcastStatisticsManager();
 
       cordMcast.storageService =
              EasyMock.createMock(StorageServiceAdapter.class);

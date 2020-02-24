@@ -72,24 +72,26 @@ import org.opencord.cordconfig.access.AccessDeviceData;
 import org.osgi.service.component.ComponentContext;
 import org.slf4j.Logger;
 
+import java.util.HashMap;
 import java.util.Dictionary;
-import java.util.Map;
-import java.util.Objects;
-import java.util.Optional;
 import java.util.Properties;
 import java.util.Set;
-import java.util.concurrent.ExecutorService;
+import java.util.Objects;
+import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 import static com.google.common.base.Strings.isNullOrEmpty;
 import static java.util.concurrent.Executors.newSingleThreadScheduledExecutor;
 import static org.onlab.util.Tools.get;
 import static org.onlab.util.Tools.groupedThreads;
-import static org.opencord.cordmcast.OsgiPropertyConstants.DEFAULT_VLAN_ENABLED;
-import static org.opencord.cordmcast.OsgiPropertyConstants.DEFAULT_PRIORITY;
-import static org.opencord.cordmcast.OsgiPropertyConstants.PRIORITY;
-import static org.opencord.cordmcast.OsgiPropertyConstants.VLAN_ENABLED;
+import static org.opencord.cordmcast.OsgiPropertyConstants.*;
 import static org.slf4j.LoggerFactory.getLogger;
 
 
@@ -102,6 +104,7 @@ import static org.slf4j.LoggerFactory.getLogger;
         property = {
         VLAN_ENABLED + ":Boolean=" + DEFAULT_VLAN_ENABLED,
         PRIORITY + ":Integer=" + DEFAULT_PRIORITY,
+        STATISTICS_GENERATION_PERIOD + ":Integer=" + STATISTICS_GENERATION_PERIOD_DEFAULT,
 })
 public class CordMcast {
     private static final String APP_NAME = "org.opencord.cordmcast";
@@ -144,6 +147,13 @@ public class CordMcast {
     @Reference(cardinality = ReferenceCardinality.MANDATORY)
     private LeadershipService leadershipService;
 
+    @Reference(cardinality = ReferenceCardinality.MANDATORY)
+    protected CordMcastStatisticsManager cordMcastStatisticsService;
+
+    CordMcastStatisticsEventPublisher mcastStatsPublisher;
+    ScheduledFuture<?> scheduledFuture;
+    ScheduledExecutorService executor;
+
     protected McastListener listener = new InternalMulticastListener();
     private InternalNetworkConfigListener configListener =
             new InternalNetworkConfigListener();
@@ -163,6 +173,8 @@ public class CordMcast {
      * Priority for multicast rules.
      **/
     private int priority = DEFAULT_PRIORITY;
+
+    private int statisticsGenerationPeriodInSeconds = STATISTICS_GENERATION_PERIOD_DEFAULT;
 
     private static final Class<McastConfig> CORD_MCAST_CONFIG_CLASS =
             McastConfig.class;
@@ -188,6 +200,7 @@ public class CordMcast {
 
     @Activate
     public void activate(ComponentContext context) {
+        log.info("Inside activate method of CordMcast");
         componentConfigService.registerProperties(getClass());
         modified(context);
 
@@ -220,7 +233,14 @@ public class CordMcast {
         McastConfig config = networkConfig.getConfig(coreAppId, CORD_MCAST_CONFIG_CLASS);
         updateConfig(config);
 
-        log.info("Started");
+        log.info("initiating thread for pushing mcast stats");
+        mcastStatsPublisher = new CordMcastStatisticsEventPublisher();
+        executor = Executors.newScheduledThreadPool(1);
+        scheduledFuture = executor.scheduleAtFixedRate(mcastStatsPublisher,
+                0, statisticsGenerationPeriodInSeconds, TimeUnit.SECONDS);
+        cordMcastStatisticsService.clearMcastRouteMap();
+
+        log.info("Mcast Started");
     }
 
     @Deactivate
@@ -232,7 +252,10 @@ public class CordMcast {
         eventExecutor.shutdown();
         clearGroups();
         groups.destroy();
-        log.info("Stopped");
+        scheduledFuture.cancel(true);
+        executor.shutdown();
+        cordMcastStatisticsService.clearMcastRouteMap();
+        log.info("Mcast Stopped");
     }
 
     public void clearGroups() {
@@ -426,6 +449,9 @@ public class CordMcast {
     }
 
     private void addSink(McastRoute route, ConnectPoint sink) {
+
+        cordMcastStatisticsService.setMcastStatistics(route, multicastVlan());
+
         if (!isLocalLeader(sink.deviceId())) {
             log.debug("Not the leader of {}. Skip sink_added event for the sink {} and group {}",
                       sink.deviceId(), sink, route.group());
@@ -683,6 +709,19 @@ public class CordMcast {
         return true;
     }
 
+    private class CordMcastStatisticsEventPublisher implements Runnable {
+        private final Logger log = getLogger(getClass());
+
+        public void run() {
+            log.info("pushing corc mcast stats to kafka");
+            HashMap<IpAddress, CordMcastStatistics> map = cordMcastStatisticsService.getMcastStats();
+            map.forEach((k, v) -> {
+                log.info("Group: %s | Source: %s | Vlan: %s", k, v.getSourceAddress(), v.getVlanId().toString());
+            });
+            cordMcastStatisticsService.getStatsDelegate().
+                    notify(new CordMcastStatisticsEvent(CordMcastStatisticsEvent.Type.STATS_UPDATE, map));
+        }
+    }
 }
 
 
